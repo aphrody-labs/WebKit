@@ -203,8 +203,9 @@ op :super_construct_varargs,
 
 # Semantically, this is iterator = symbolIterator.@call(iterable); next = iterator.next;
 # where symbolIterator the result of iterable[Symbol.iterator] (which is done in a different bytecode).
-# For builtin iterators, however, this has special behavior where next becomes the empty value, which
-# indicates that we are in a known iteration mode to op_iterator_next.
+# For builtin iterators, however, this has special behavior where next becomes a sentinel, which
+# indicates that we are in a known iteration mode to op_iterator_next. In IterationMode::FastArray
+# and IterationMode::FastString iterator becomes the sentinel instead, and next is the index into iterable.
 op :iterator_open,
     args: {
         iterator: VirtualRegister,
@@ -812,6 +813,17 @@ op :jneq_ptr,
     },
     metadata: {
         hasJumped: bool,
+    }
+
+op :iterator_close_check,
+    args: {
+        iterator: VirtualRegister,
+        next: VirtualRegister,
+        iterable: VirtualRegister,
+        targetLabel: BoundLabel,
+    },
+    metadata: {
+        seenModes: uint8_t,
     }
 
 # Opcodes without metadata are last

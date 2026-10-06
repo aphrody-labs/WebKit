@@ -597,6 +597,7 @@ bool CodeBlock::finishCreation(VM& vm, ScriptExecutable* ownerExecutable, Unlink
         LINK(OpCreateGenerator)
 
         LINK(OpJneqPtr)
+        LINK(OpIteratorCloseCheck)
 
         LINK(OpCatch)
         LINK(OpProfileControlFlow)
@@ -3755,7 +3756,7 @@ void CodeBlock::tallyFrequentExitSites()
     case JITType::FTLJIT: {
         auto* jitCode = m_jitCode->ftl();
         for (auto& stub : jitCode->m_osrExitStubs)
-            jitCode->m_osrExit[stub.exitIndex].considerAddingAsFrequentExitSite(profiledBlock);
+            jitCode->osrExit(stub.exitIndex).considerAddingAsFrequentExitSite(profiledBlock);
         break;
     }
 #endif

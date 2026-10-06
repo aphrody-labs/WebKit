@@ -46,6 +46,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "ICStats.h"
 #include "InlineCacheCompiler.h"
 #include "Interpreter.h"
+#include "IteratorOperations.h"
 #include "JIT.h"
 #include "JITExceptions.h"
 #include "JITThunks.h"
@@ -3471,17 +3472,48 @@ JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject
         OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
     }
 
-    if (auto* stringIterator = dynamicDowncast<JSStringIterator>(iterator)) {
-        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastString;
-        JSString* nextValue = stringIterator->nextWithAdvance(globalObject, vm);
-        OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
-        bool done = !nextValue;
-        JSValue value = done ? JSValue() : JSValue(nextValue);
-        OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
-    }
-
     RELEASE_ASSERT_NOT_REACHED();
     OPERATION_RETURN(scope, makeUGPRPair(0, 0));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationIteratorNextFastArray, UGPRPair, (JSGlobalObject* globalObject, EncodedJSValue encodedIterable, EncodedJSValue* indexInFrame, void* metadataPointer))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    auto& metadata = *std::bit_cast<OpIteratorNext::Metadata*>(metadataPointer);
+    JSValue iterable = JSValue::decode(encodedIterable);
+    RELEASE_ASSERT(isJSArray(iterable));
+    auto* array = asArray(iterable);
+    metadata.m_iterableProfile.observeStructureID(array->structureID());
+    metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastArray;
+
+    JSValue index = JSValue::decode(*indexInFrame);
+    JSValue value;
+    bool hasNext = iteratorNextFastArray(globalObject, array, index, value);
+    *indexInFrame = JSValue::encode(index);
+    OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+
+    OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(!hasNext)), JSValue::encode(value)));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationIteratorNextFastString, UGPRPair, (JSGlobalObject* globalObject, JSString* string, EncodedJSValue* indexInFrame, void* metadataPointer))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    auto& metadata = *std::bit_cast<OpIteratorNext::Metadata*>(metadataPointer);
+    metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastString;
+
+    auto [value, nextPosition] = JSStringIterator::advance(globalObject, vm, string, JSValue::decode(*indexInFrame).asInt32());
+    OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+    *indexInFrame = JSValue::encode(jsNumber(nextPosition));
+
+    OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(!value)), JSValue::encode(value)));
 }
 
 #endif

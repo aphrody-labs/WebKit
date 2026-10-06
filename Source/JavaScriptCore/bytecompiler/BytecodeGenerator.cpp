@@ -146,6 +146,7 @@ void GenericLabel<JSGeneratorTraits>::setLocation(BytecodeGenerator& generator, 
         CASE(OpJngreatereq)
         CASE(OpJbelow)
         CASE(OpJbeloweq)
+        CASE(OpIteratorCloseCheck)
         default:
             ASSERT_NOT_REACHED();
         }
@@ -177,7 +178,7 @@ FinallyContext::FinallyContext(BytecodeGenerator& generator, Label& finallyLabel
 }
 
 template<typename EmitBytecodeFunctor>
-void BytecodeGenerator::asyncFuncParametersTryCatchWrap(const EmitBytecodeFunctor& emitBytecode)
+void BytecodeGenerator::asyncFuncParametersTryCatchWrap(NOESCAPE const EmitBytecodeFunctor& emitBytecode)
 {
     TryData* tryData = nullptr;
     if (m_asyncFuncParametersTryCatchInfo) {
@@ -1266,7 +1267,7 @@ BytecodeGenerator::~BytecodeGenerator() = default;
 
 void BytecodeGenerator::initializeDefaultParameterValuesAndSetupFunctionScopeStack(
     FunctionParameters& parameters, bool isSimpleParameterList, FunctionNode* functionNode, SymbolTable* functionSymbolTable, 
-    int symbolTableConstantIndex, const ScopedLambda<bool (UniquedStringImpl*)>& captures, bool shouldCreateArgumentsVariableInParameterScope)
+    int symbolTableConstantIndex, NOESCAPE const ScopedLambda<bool(UniquedStringImpl*)>& captures, bool shouldCreateArgumentsVariableInParameterScope)
 {
     Vector<std::pair<Identifier, RefPtr<RegisterID>>> valuesToMoveIntoVars;
     ASSERT(!(isSimpleParameterList && shouldCreateArgumentsVariableInParameterScope));
@@ -3596,6 +3597,21 @@ RegisterID* BytecodeGenerator::emitNewArray(RegisterID* dst, ElementNode* elemen
     return dst;
 }
 
+RegisterID* BytecodeGenerator::emitNewArrayByReversingArguments(RegisterID* dst, CallArguments& callArguments)
+{
+    unsigned length = callArguments.argumentCountIncludingThis() - 1;
+    RefPtr<RegisterID> temporary = newTemporary();
+    for (unsigned index = 0; index < length / 2; ++index) {
+        RegisterID* low = callArguments.argumentRegister(index);
+        RegisterID* high = callArguments.argumentRegister(length - 1 - index);
+        move(temporary.get(), low);
+        move(low, high);
+        move(high, temporary.get());
+    }
+    OpNewArray::emit(this, dst, length ? callArguments.argumentRegister(length - 1) : VirtualRegister { 0 }, length, ArrayWithUndecided);
+    return dst;
+}
+
 RegisterID* BytecodeGenerator::emitNewArrayWithSpread(RegisterID* dst, ElementNode* elements)
 {
     BitVector bitVector;
@@ -4790,7 +4806,7 @@ bool BytecodeGenerator::emitReadOnlyExceptionIfNeeded(const Variable& variable)
     return false;
 }
 
-void BytecodeGenerator::emitTryWithFinallyThatDoesNotShadowException(const ScopedLambda<void(BytecodeGenerator&)>& emitTry, const ScopedLambda<void(BytecodeGenerator&)>& emitFinally)
+void BytecodeGenerator::emitTryWithFinallyThatDoesNotShadowException(NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitTry, NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitFinally)
 {
     Ref<Label> finallyLabel = newLabel();
     FinallyContext finallyContext(*this, finallyLabel.get());
@@ -4799,7 +4815,7 @@ void BytecodeGenerator::emitTryWithFinallyThatDoesNotShadowException(const Scope
     popFinallyControlFlowScope();
 }
 
-void BytecodeGenerator::emitTryWithFinallyThatDoesNotShadowException(FinallyContext& finallyContext, const ScopedLambda<void(BytecodeGenerator&)>& emitTry, const ScopedLambda<void(BytecodeGenerator&)>& emitFinally)
+void BytecodeGenerator::emitTryWithFinallyThatDoesNotShadowException(FinallyContext& finallyContext, NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitTry, NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitFinally)
 {
     Ref<Label> tryStartLabel = newEmittedLabel();
     TryData* tryData = pushTry(tryStartLabel.get(), *finallyContext.finallyLabel(), HandlerType::SynthesizedFinally);
@@ -4865,7 +4881,7 @@ void BytecodeGenerator::emitPrepareDisposable(RegisterID* value, const JSTextPos
     }
 }
 
-void BytecodeGenerator::emitUsingBodyScope(unsigned usingCount, bool hasAwaitUsing, const ScopedLambda<void(BytecodeGenerator&)>& emitBody)
+void BytecodeGenerator::emitUsingBodyScope(unsigned usingCount, bool hasAwaitUsing, NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitBody)
 {
     ASSERT(!hasAwaitUsing || isAsyncFunctionParseMode(parseMode()) || isModuleParseMode(parseMode()));
 
@@ -5076,7 +5092,7 @@ void BytecodeGenerator::emitUsingBodyScope(unsigned usingCount, bool hasAwaitUsi
     m_usingScopeStack.removeLast();
 }
 
-void BytecodeGenerator::emitBodyWithUsingIfNeeded(unsigned usingCount, bool hasAwaitUsing, const ScopedLambda<void(BytecodeGenerator&)>& emitBody)
+void BytecodeGenerator::emitBodyWithUsingIfNeeded(unsigned usingCount, bool hasAwaitUsing, NOESCAPE const ScopedLambda<void(BytecodeGenerator&)>& emitBody)
 {
     if (usingCount)
         emitUsingBodyScope(usingCount, hasAwaitUsing, emitBody);
@@ -5084,7 +5100,7 @@ void BytecodeGenerator::emitBodyWithUsingIfNeeded(unsigned usingCount, bool hasA
         emitBody(*this);
 }
 
-void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, ExpressionNode* subjectNode, const ScopedLambda<void(BytecodeGenerator&, RegisterID*)>& callBack, ForOfNode* forLoopNode, RegisterID* forLoopSymbolTable)
+void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, ExpressionNode* subjectNode, NOESCAPE const ScopedLambda<void(BytecodeGenerator&, RegisterID*)>& callBack, ForOfNode* forLoopNode, RegisterID* forLoopSymbolTable)
 {
     if (forLoopNode && forLoopNode->isForAwait()) {
         ASSERT(isAsyncFunctionParseMode(parseMode()) || isModuleParseMode(parseMode()));
@@ -5202,7 +5218,7 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
             callBack(generator, value.get());
             generator.emitJump(loopStart.get());
         }, [&](BytecodeGenerator& generator) {
-            generator.emitIteratorGenericClose(iterator.get(), node);
+            generator.emitIteratorClose(iterator.get(), nextOrIndex.get(), iterable.get(), node);
         });
 
         bool breakLabelIsBound = scope->breakTargetMayBeBound();
@@ -5211,7 +5227,7 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
         popFinallyControlFlowScope();
         if (breakLabelIsBound) {
             // IteratorClose sequence for break-ed control flow.
-            emitIteratorGenericClose(iterator.get(), node, EmitAwait::No);
+            emitIteratorClose(iterator.get(), nextOrIndex.get(), iterable.get(), node);
         }
     }
     emitLabel(loopDone.get());
@@ -5580,6 +5596,7 @@ void BytecodeGenerator::emitIteratorNext(RegisterID* done, RegisterID* value, Re
         emitDebugHook(WillExecuteExpression, node->divotStart());
 
     emitExpressionInfo(node->divot(), node->divotStart(), node->divotEnd());
+    ASSERT(iterable->isTemporary() && nextOrIndex->isTemporary());
     unsigned nextResultValueProfile = nextValueProfileIndex();
     unsigned doneValueProfile = nextValueProfileIndex();
     unsigned valueValueProfile = nextValueProfileIndex();
@@ -5645,6 +5662,14 @@ void BytecodeGenerator::emitIteratorGenericClose(RegisterID* iterator, const Thr
     emitLabel(done.get());
 }
 
+
+void BytecodeGenerator::emitIteratorClose(RegisterID* iterator, RegisterID* nextOrIndex, RegisterID* iterable, const ThrowableExpressionData* node)
+{
+    Ref<Label> done = newLabel();
+    OpIteratorCloseCheck::emit(this, iterator, nextOrIndex, iterable, done->bind(this));
+    emitIteratorGenericClose(iterator, node);
+    emitLabel(done.get());
+}
 
 RegisterID* BytecodeGenerator::emitDelegateYield(RegisterID* argument, ThrowableExpressionData* node)
 {
