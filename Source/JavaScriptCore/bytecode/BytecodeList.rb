@@ -1409,18 +1409,6 @@ op :typeof,
         value: VirtualRegister,
     }
 
-# Precedes the IteratorClose sequence of an iterator made by op_iterator_open. When op_iterator_open found an Array it may
-# not have made an iterator object: iterator is then a marker cell, next the index and iterable the Array. Jumps to targetLabel,
-# over the IteratorClose sequence, when iterator is that marker and IteratorClose cannot be observed (nothing to do); otherwise
-# falls through, after replacing a marker by the Array Iterator object it stands for.
-op :iterator_close_check,
-    args: {
-        iterator: VirtualRegister,
-        next: VirtualRegister,
-        iterable: VirtualRegister,
-        targetLabel: BoundLabel,
-    }
-
 op :is_cell_with_type,
     args: {
         dst: VirtualRegister,

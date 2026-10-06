@@ -183,26 +183,17 @@ JSValue JSValue::toThisSloppySlowCase(JSGlobalObject* globalObject) const
     return toObject(globalObject);
 }
 
-static NEVER_INLINE JSObject* throwNotAnObjectErrorForSynthesizePrototype(JSGlobalObject* globalObject, JSValue value)
+JSObject* JSValue::synthesizePrototype(JSGlobalObject* globalObject) const
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    ASSERT(value.isUndefinedOrNull());
-    throwException(globalObject, scope, createNotAnObjectError(globalObject, value));
-    return nullptr;
-}
 
-JSObject* JSValue::synthesizePrototype(JSGlobalObject* globalObject) const
-{
     if (isCell()) {
         if (isString())
             return globalObject->stringPrototype();
         if (isHeapBigInt())
             return globalObject->bigIntPrototype();
-        // A cell that is not a primitive does not get here. In particular not one of the sentinel cells that op_iterator_open leaves in
-        // frame registers: those are not values, and one that got out must not pass for a Symbol. (What this comparison costs a Symbol,
-        // keeping the throw out of line saves every caller.)
-        RELEASE_ASSERT(isSymbol());
+        ASSERT(isSymbol());
         return globalObject->symbolPrototype();
     }
 
@@ -215,7 +206,9 @@ JSObject* JSValue::synthesizePrototype(JSGlobalObject* globalObject) const
         return globalObject->bigIntPrototype();
 #endif
 
-    return throwNotAnObjectErrorForSynthesizePrototype(globalObject, *this);
+    ASSERT(isUndefinedOrNull());
+    throwException(globalObject, scope, createNotAnObjectError(globalObject, *this));
+    return nullptr;
 }
 
 // https://tc39.es/ecma262/#sec-ordinaryset

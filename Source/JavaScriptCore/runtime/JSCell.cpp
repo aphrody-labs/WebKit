@@ -275,7 +275,7 @@ JSString* JSCell::toStringSlowCase(JSGlobalObject* globalObject) const
         RETURN_IF_EXCEPTION(scope, emptyString);
         return returnString;
     }
-    RELEASE_ASSERT(isSymbol()); // And not, say, a sentinel cell that got out of a frame register.
+    ASSERT(isSymbol());
     throwTypeError(globalObject, scope, SymbolCoercionError);
     return emptyString;
 }

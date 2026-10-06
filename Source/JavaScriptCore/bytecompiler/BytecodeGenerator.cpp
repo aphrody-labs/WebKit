@@ -146,7 +146,6 @@ void GenericLabel<JSGeneratorTraits>::setLocation(BytecodeGenerator& generator, 
         CASE(OpJngreatereq)
         CASE(OpJbelow)
         CASE(OpJbeloweq)
-        CASE(OpIteratorCloseCheck)
         default:
             ASSERT_NOT_REACHED();
         }
@@ -5203,7 +5202,7 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
             callBack(generator, value.get());
             generator.emitJump(loopStart.get());
         }, [&](BytecodeGenerator& generator) {
-            generator.emitIteratorCloseAfterIteratorOpen(iterator.get(), nextOrIndex.get(), iterable.get(), node);
+            generator.emitIteratorGenericClose(iterator.get(), node);
         });
 
         bool breakLabelIsBound = scope->breakTargetMayBeBound();
@@ -5212,7 +5211,7 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
         popFinallyControlFlowScope();
         if (breakLabelIsBound) {
             // IteratorClose sequence for break-ed control flow.
-            emitIteratorCloseAfterIteratorOpen(iterator.get(), nextOrIndex.get(), iterable.get(), node);
+            emitIteratorGenericClose(iterator.get(), node, EmitAwait::No);
         }
     }
     emitLabel(loopDone.get());
@@ -5567,7 +5566,6 @@ void BytecodeGenerator::emitIteratorOpen(RegisterID* iterator, RegisterID* nextO
     unsigned iterableValueProfile = nextValueProfileIndex();
     unsigned iteratorValueProfile = nextValueProfileIndex();
     unsigned nextValueProfile = nextValueProfileIndex();
-    ASSERT(iterator->isTemporary() && nextOrIndex->isTemporary());
     OpIteratorOpen::emit(this, iterator, nextOrIndex, symbolIterator, iterable.thisRegister(), iterable.stackOffset(), iterableValueProfile, iteratorValueProfile, nextValueProfile);
 }
 
@@ -5585,7 +5583,6 @@ void BytecodeGenerator::emitIteratorNext(RegisterID* done, RegisterID* value, Re
     unsigned nextResultValueProfile = nextValueProfileIndex();
     unsigned doneValueProfile = nextValueProfileIndex();
     unsigned valueValueProfile = nextValueProfileIndex();
-    ASSERT((iterable->isTemporary() || iterable->virtualRegister().isArgument()) && nextOrIndex->isTemporary());
     OpIteratorNext::emit(this, done, value, iterable, nextOrIndex, iterator.thisRegister(), iterator.stackOffset(), nextResultValueProfile, doneValueProfile, valueValueProfile);
 }
 
@@ -5648,16 +5645,6 @@ void BytecodeGenerator::emitIteratorGenericClose(RegisterID* iterator, const Thr
     emitLabel(done.get());
 }
 
-
-void BytecodeGenerator::emitIteratorCloseAfterIteratorOpen(RegisterID* iterator, RegisterID* nextOrIndex, RegisterID* iterable, const ThrowableExpressionData* node)
-{
-    // These are read back by op_iterator_next and op_iterator_close_check as the state of the iteration: nothing else may write them.
-    ASSERT(iterator->isTemporary() && nextOrIndex->isTemporary() && (iterable->isTemporary() || iterable->virtualRegister().isArgument()));
-    Ref<Label> done = newLabel();
-    OpIteratorCloseCheck::emit(this, iterator, nextOrIndex, iterable, done->bind(this));
-    emitIteratorGenericClose(iterator, node);
-    emitLabel(done.get());
-}
 
 RegisterID* BytecodeGenerator::emitDelegateYield(RegisterID* argument, ThrowableExpressionData* node)
 {

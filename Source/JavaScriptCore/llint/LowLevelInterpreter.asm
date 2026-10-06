@@ -1421,17 +1421,12 @@ macro skipIfIsRememberedOrInEden(cell, slowPath)
 .done:
 end
 
-# setData is the address of an InlineWatchpointSet's m_data.
-macro branchIfInlineWatchpointSetIsStillValid(setData, scratch, stillValid)
-    loadp setData, scratch
-    bpeq scratch, InlineWatchpointSetThinInvalidated, .invalidated
-    btpnz scratch, InlineWatchpointSetThinFlag, stillValid
-    bbneq WatchpointSet::m_state[scratch], IsInvalidated, stillValid
-.invalidated:
-end
-
 macro notifyWrite(set, scratch, slow)
-    branchIfInlineWatchpointSetIsStillValid(InlineWatchpointSet::m_data[set], scratch, slow)
+    loadp InlineWatchpointSet::m_data[set], scratch
+    bpeq scratch, InlineWatchpointSetThinInvalidated, .done
+    btpnz scratch, InlineWatchpointSetThinFlag, slow
+    bbneq WatchpointSet::m_state[scratch], IsInvalidated, slow
+.done:
 end
 
 macro varReadOnlyCheck(slowPath, scratch)
