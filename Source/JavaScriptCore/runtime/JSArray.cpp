@@ -1068,6 +1068,10 @@ bool JSArray::fastSplice(JSGlobalObject* globalObject, uint64_t length, uint64_t
     IndexingType type = indexingType();
     if (type != ArrayWithInt32 && type != ArrayWithDouble && type != ArrayWithContiguous)
         return false;
+    // (indexingType() does not say copy-on-write, which an array with immutable properties is. False: the caller's generic
+    // path, whose puts and deletes are refused.)
+    if (structure()->hasImmutableProperties()) [[unlikely]]
+        return false;
     if (length != butterfly()->publicLength())
         return false;
 
