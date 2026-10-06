@@ -137,6 +137,8 @@ inline int posixStatx(int directoryFileDescriptor, UTF8CStringView path, int fla
     return dlopen(path.utf8(), mode);
 }
 
+// Bionic has no POSIX shared memory: <sys/mman.h> does not declare shm_open() or shm_unlink().
+#if !OS(ANDROID)
 [[nodiscard]] inline int posixShmOpen(UTF8CStringView name, int flags, mode_t mode)
 {
     return shm_open(name.utf8(), flags, mode);
@@ -146,6 +148,7 @@ inline int posixShmUnlink(UTF8CStringView name)
 {
     return shm_unlink(name.utf8());
 }
+#endif
 #endif
 
 #endif // OS(UNIX)
@@ -175,7 +178,9 @@ using WTF::posixStatx;
 #endif
 #if !PLATFORM(PLAYSTATION)
 using WTF::posixDlopen;
+#if !OS(ANDROID)
 using WTF::posixShmOpen;
 using WTF::posixShmUnlink;
+#endif
 #endif
 #endif
