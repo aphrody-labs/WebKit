@@ -557,7 +557,12 @@ bool CodeBlock::finishCreation(VM& vm, ScriptExecutable* ownerExecutable, Unlink
     for (const auto& instruction : instructionStream) {
         OpcodeID opcodeID = instruction->opcodeID();
         static_assert(OpcodeIDWidthBySize<JSOpcodeTraits, OpcodeSize::Wide32>::opcodeIDSize == 1);
-        bytecodeCost += opcodeLengths[opcodeID] + 1;
+        // op_iterator_close_check stands in front of every IteratorClose sequence of a for-of or an array pattern and costs next to nothing
+        // in any tier. It is not counted: tier-up thresholds and inlining budgets scale with this number, and making every such function
+        // look bigger than it did shifts what gets compiled when, for no reason. Counted, JetStream2's Babylon ran 4.2% more instructions
+        // with the fork's version of this opcode (one more large FTL compilation).
+        if (opcodeID != op_iterator_close_check)
+            bytecodeCost += opcodeLengths[opcodeID] + 1;
         switch (opcodeID) {
         LINK(OpGetByVal)
         LINK(OpGetPrivateName)
