@@ -1,0 +1,264 @@
+name: Aphrody prebuilts
+
+# Builds the bun-webkit prebuilts of this fork and publishes them as the release `autobuild-<sha>`, with the same
+# archive names and the same contents as oven-sh/WebKit (the lanes, Dockerfiles and ICU pins are upstream's:
+# .github/scripts/lanes.mjs, Dockerfile*). Upstream's own workflow (ci.yml) needs oven-sh's private large runners and is
+# disabled in this fork; this one runs on GitHub's standard runners (public repository: free), one lane per job.
+#
+#   plan ──> image ──> build ──> release
+#
+# Triggered by hand (or by `bun scripts/aphrody/webkit-prebuilt.ts` in aphrody-labs/bun, which bumps WEBKIT_VERSION):
+#   gh workflow run aphrody-prebuilts.yml -R aphrody-labs/WebKit -f ref=<sha|branch> -f lanes='-musl'
+# `lanes` is a comma-separated list of regular expressions matched against the lane labels
+# (bun-webkit-linux-amd64-musl-lto, ...); "all" builds every lane. Running it again for the same sha adds lanes to the
+# release that is already published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        type: string
+        default: main
+      lanes:
+        description: 'Regexes on lane labels, comma-separated ("all" = every lane)'
+        type: string
+        default: 'bun-webkit-linux-(amd64|arm64)(-musl)?(-lto)?$,bun-webkit-linux-(amd64|arm64)(-musl)?-debug$'
+      runner:
+        description: Runner label of the lane jobs
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: aphrody-prebuilts-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ref: ${{ steps.sha.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      build: ${{ steps.plan.outputs.build }}
+      labels: ${{ steps.plan.outputs.labels }}
+      images: ${{ steps.plan.outputs.images }}
+      build_images: ${{ steps.plan.outputs.build_images }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: |
+            .github/scripts
+            macos-cross
+            icu
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANES: ${{ inputs.lanes }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ -f .github/scripts/lanes.mjs ] || { echo "::error::this commit predates .github/scripts/lanes.mjs"; exit 1; }
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "tag=autobuild-$SHA" >> "$GITHUB_OUTPUT"
+          node .github/scripts/lanes.mjs
+          node .github/scripts/lanes.mjs plan > plan.txt
+          # upstream separates the tested lanes from the others; here every lane is one matrix.
+          all=$(jq -sc '[.[] | .include[]]' <(grep '^build=' plan.txt | cut -d= -f2-) <(grep '^build_tested=' plan.txt | cut -d= -f2-))
+          if [ "$LANES" = all ]; then
+            pattern='.'
+          else
+            pattern=$(jq -rn --arg l "$LANES" '$l | split(",") | map(gsub("^\\s+|\\s+$"; "")) | join("|")')
+          fi
+          selected=$(jq -c --arg p "$pattern" '[.[] | select(.label | test($p))]' <<< "$all")
+          n=$(jq length <<< "$selected")
+          [ "$n" -gt 0 ] || { echo "::error::no lane matches '$LANES'"; exit 1; }
+          echo "selected $n lanes:"; jq -r '.[].label' <<< "$selected"
+          echo "build=$(jq -c '{include: .}' <<< "$selected")" >> "$GITHUB_OUTPUT"
+          echo "labels=$(jq -c 'map(.label)' <<< "$selected")" >> "$GITHUB_OUTPUT"
+          # Toolchain images missing from ghcr.io. All toolchains are listed, only those of the selected lanes are built.
+          missing=$(grep '^images=' plan.txt | cut -d= -f2-)
+          wanted=$(jq -c '[.[].image | sub("^.*:"; "") | sub("-[0-9a-f]{16}$"; "")] | unique' <<< "$selected")
+          images=$(jq -c --argjson w "$wanted" '{include: [.include[] | select(.name as $n | $w | index($n))]}' <<< "$missing")
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          echo "build_images=$(jq '.include | length > 0' <<< "$images")" >> "$GITHUB_OUTPUT"
+      - name: Create the draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          TARGET: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if existing=$(gh release view "$TAG" --json databaseId,isDraft 2>/dev/null); then
+            id=$(jq -r .databaseId <<< "$existing")
+            if [ "$(jq -r .isDraft <<< "$existing")" = false ]; then
+              echo "release $TAG is already published (id $id), the lanes are added to it"
+              echo "release_id=$id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          fi
+          created=$(gh api -X POST "repos/$GH_REPO/releases" -f tag_name="$TAG" -f name="$TAG" -f target_commitish="$TARGET" \
+            -F draft=true -F prerelease=false -F generate_release_notes=false --jq '"\(.id) \(.html_url)"')
+          echo "created draft $created"
+          echo "release_id=${created%% *}" >> "$GITHUB_OUTPUT"
+
+  image:
+    name: image ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.build_images == 'true'
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ inputs.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.images) }}
+    timeout-minutes: 120
+    steps:
+      - name: Make room
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          sparse-checkout: |
+            .github/scripts
+            macos-cross
+            icu
+      - uses: docker/setup-buildx-action@885d1462b80bc1c1c7f0b00334ad271f09369c55 # v2.10.0
+        with:
+          install: true
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          node .github/scripts/lanes.mjs image "$NAME" --push
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [plan, image]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.build) }}
+    # GitHub's hard limit for a hosted job.
+    timeout-minutes: 360
+    steps:
+      # A standard runner has ~14 GB free on /; the Docker build needs far more. Docker's data root moves to /mnt
+      # (~70 GB) and preinstalled toolchains nobody uses here are removed.
+      - name: Make room
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo systemctl stop docker docker.socket
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          df -h / /mnt
+          nproc
+          free -g | head -2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !LayoutTests/
+            !JSTests/
+            !PerformanceTests/
+            !Websites/
+            !ManualTests/
+            !WebDriverTests/
+      - uses: docker/setup-buildx-action@885d1462b80bc1c1c7f0b00334ad271f09369c55 # v2.10.0
+        with:
+          install: true
+      - name: Build
+        env:
+          LABEL: ${{ matrix.label }}
+          PACKAGE_OS: ${{ matrix.package_os }}
+          PACKAGE_CPU: ${{ matrix.package_cpu }}
+          BUILD_REF: ${{ needs.plan.outputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE: ${{ matrix.image }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || { echo "::error::no release for $TAG; use 'Re-run all jobs' so that plan creates it again."; exit 1; }
+          out=/mnt/out
+          sudo mkdir -p "$out"
+          sudo chown "$USER" "$out"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          start=$(date +%s)
+          node .github/scripts/lanes.mjs build "$LABEL" --output "$out/bun-webkit" --base-image "$IMAGE"
+          echo "::notice::$LABEL built in $(( ($(date +%s) - start) / 60 )) min"
+          cd "$out"
+          echo "#define BUN_WEBKIT_VERSION \"$BUILD_REF\"" >> bun-webkit/include/cmakeconfig.h
+          echo "{ \"name\": \"$LABEL\", \"version\": \"0.0.1-$BUILD_REF\", \"os\": [\"$PACKAGE_OS\"], \"cpu\": [\"$PACKAGE_CPU\"], \"repository\": \"https://github.com/$REPOSITORY\" }" > bun-webkit/package.json
+          rm -rf bun-webkit/lib/*.so bun-webkit/lib/*.so.*
+          tar -czf "$LABEL.tar.gz" bun-webkit
+          ls -l "$LABEL.tar.gz"
+          for attempt in 1 2 3 4 5; do
+            gh release upload "$TAG" "$LABEL.tar.gz" --clobber && { echo "uploaded $LABEL"; exit 0; }
+            echo "upload of $LABEL failed (attempt $attempt)"
+            sleep $((attempt * 10))
+          done
+          exit 1
+
+  release:
+    name: release
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [plan, build]
+    steps:
+      - name: Publish or delete the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_ID: ${{ needs.plan.outputs.release_id }}
+          NEEDS: ${{ toJSON(needs) }}
+          LABELS: ${{ needs.plan.outputs.labels }}
+        run: |
+          set -euo pipefail
+          ok=true
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "jobs that did not succeed:"; echo "$failed"; ok=false
+          else
+            jq -r '.[]' <<< "$LABELS" | sort > expected.txt
+            gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq '.assets[].name' | sed 's/\.tar\.gz$//' | sort > uploaded.txt
+            missing=$(comm -23 expected.txt uploaded.txt)
+            [ -z "$missing" ] || { echo "assets missing from $TAG:"; echo "$missing"; ok=false; }
+          fi
+          if [ "$ok" = true ]; then
+            gh api -X PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false --jq .html_url
+            exit 0
+          fi
+          if [ -n "$RELEASE_ID" ] && [ "$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .draft 2>/dev/null || echo missing)" = true ]; then
+            gh api -X DELETE "repos/$GH_REPO/releases/$RELEASE_ID"
+            echo "deleted draft $TAG"
+          fi
+          exit 1

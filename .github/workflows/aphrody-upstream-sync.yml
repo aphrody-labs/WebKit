@@ -1,0 +1,50 @@
+name: Aphrody upstream sync
+
+# Keeps main in step with oven-sh/WebKit main. While this fork carries no patch of its own, GitHub's merge-upstream is a
+# fast-forward. Once main has commits upstream lacks (JSC patches), the same commits are merged by git; a conflict fails
+# the run and leaves main untouched.
+
+on:
+  schedule:
+    - cron: "37 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aphrody-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'aphrody-labs/WebKit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # GITHUB_TOKEN cannot push commits that touch .github/workflows, and upstream merges often do: a token with the
+      # `workflow` scope is the APHRODY_SYNC_TOKEN secret.
+      - name: Merge upstream
+        env:
+          GH_TOKEN: ${{ secrets.APHRODY_SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cmp=$(gh api "repos/$GH_REPO/compare/main...oven-sh:WebKit:main" --jq '"\(.status) ahead=\(.ahead_by) behind=\(.behind_by)"')
+          echo "main vs upstream: $cmp"
+          case "$cmp" in
+            identical*|behind*) echo "nothing to merge"; exit 0 ;;
+          esac
+          if gh api -X POST "repos/$GH_REPO/merge-upstream" -f branch=main; then
+            echo; exit 0
+          fi
+          echo "fast-forward refused, merging with git"
+          git config --global user.name "aphrody-dev"
+          git config --global user.email "contact@aphrody.com"
+          git clone --filter=blob:none --no-checkout "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" w
+          cd w
+          git remote add upstream https://github.com/oven-sh/WebKit.git
+          git fetch --filter=blob:none upstream main
+          git checkout main
+          git merge --no-edit upstream/main
+          git push origin main
