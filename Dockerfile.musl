@@ -11,12 +11,12 @@ ARG LINUX_ARCH="x86_64"
 # `base` is the toolchain and nothing else: it takes no lane setting, so it is the same for every lane. CI builds it once per change, keeps it in ghcr.io, and hands it to the lanes as
 # `--build-context base=docker-image://...`, which replaces this stage (.github/workflows/ci.yml, the `image` job).
 # Without that, it is built here like any other stage. Lane settings belong in `lane` below.
-FROM alpine:3.23 as base
+FROM alpine:3.24 as base
 
 # LLVM 23 is in Alpine edge only. `@edge` is a tagged repository: apk takes a package from it only when the package is
-# asked for with that tag, or when a tagged package needs something 3.23 does not have. So musl, libstdc++ and gcc stay
-# 3.23's, here and in the aarch64 sysroot below (which copies /etc/apk/repositories). The one thing that does follow
-# clang from edge is libgcc-static (libgcc.a and the crt files of this container's architecture; 3.23 has no such
+# asked for with that tag, or when a tagged package needs something 3.24 does not have. So musl, libstdc++ and gcc stay
+# 3.24's, here and in the aarch64 sysroot below (which copies /etc/apk/repositories). The one thing that does follow
+# clang from edge is libgcc-static (libgcc.a and the crt files of this container's architecture; 3.24 has no such
 # package): the sysroot step checks that it is still the GCC version of the sysroot's.
 # Edge is a rolling repository: a rebuild of this stage takes the 23.x that is there on that day.
 RUN echo "@edge https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
